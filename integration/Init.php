@@ -50,18 +50,11 @@ final class Init {
                     'value' => 'sandbox',
                 ],
                 [
-                    'name' => 'store_id',
-                    'type' => 'text',
-                    'label' => __('Store ID', 'tppay'),
-                    'value' => '',
-                    'desc' => __('Your Prodamus Store ID.', 'tppay'),
-                ],
-                [
-                    'name' => 'store_password',
+                    'name' => 'api_token',
                     'type' => 'secret_key',
-                    'label' => __('Store Password', 'tppay'),
+                    'label' => __('API Token', 'tppay'),
                     'value' => '',
-                    'desc' => __('Your Prodamus Store Password', 'tppay'),
+                    'desc' => __('Your Prodamus API Token.', 'tppay'),
                 ],
                 [
                     'name' => 'webhook_url',

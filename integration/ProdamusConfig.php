@@ -11,15 +11,13 @@ class ProdamusConfig extends BaseConfig implements ConfigContract {
 
 	private const CONFIG_KEYS = [
 		'environment' => 'select',
-		'store_id' => 'text',
-		'store_password' => 'secret_key',
+		'api_token' => 'secret_key',
 	];
 
 	use PaymentUrlsTrait;
 
 	private $environment;
-	private $store_id;
-	private $store_password;
+	private $api_token;
 
 	protected $name = 'prodamus';
 
@@ -45,30 +43,25 @@ class ProdamusConfig extends BaseConfig implements ConfigContract {
 		return $this->environment;
 	}
 
-	public function getStoreId(): string {
-		return $this->store_id;
-	}
-
-	public function getStorePassword(): string {
-		return $this->store_password;
+	public function getAPIToken(): string {
+		return $this->api_token;
 	}
 
 	public function getApiDomain(): string {
 		return $this->environment === 'sandbox'
-			? 'https://sandbox.prodamus.com'
-			: 'https://securepay.prodamus.com';
+			? 'https://demo.payform.ru'
+			: 'https://payform.ru';
 	}
 
 	public function is_configured(): bool {
-		return !empty($this->store_id) && !empty($this->store_password);
+		return !empty($this->api_token);
 	}
 
 	public function createConfig(): void {
 		parent::createConfig();
 
 		$config = [
-			'store_id' => $this->getStoreId(),
-			'store_password' => $this->getStorePassword(),
+			'api_token' => $this->getAPIToken(),
 			'api_domain' => $this->getApiDomain(),
 		];
 

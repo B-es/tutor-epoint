@@ -59,11 +59,8 @@ class ProdamusOrderProcess {
                 }
 
                 switch ($field['name']) {
-                    case 'store_id':
-                        $this->client['store_id'] = $field['value'];
-                        break;
-                    case 'store_password':
-                        $this->client['store_password'] = $field['value'];
+                    case 'api_token':
+                        $this->client['api_token'] = $field['value'];
                         break;
                     case 'environment':
                         $this->client['environment'] = $field['value'];
@@ -71,7 +68,7 @@ class ProdamusOrderProcess {
                 }
             }
 
-            if (empty($this->client['store_id']) || empty($this->client['store_password']) || empty($this->client['environment'])) {
+            if (empty($this->client['api_token']) || empty($this->client['environment'])) {
                 return;
             }
 
@@ -96,32 +93,7 @@ class ProdamusOrderProcess {
     }
 
     private function verifyHash(array $post_data): bool {
-        if (!isset($post_data['verify_sign']) || !isset($post_data['verify_key'])) {
-            return true;
-        }
-
-        $verify_key = sanitize_text_field(wp_unslash($post_data['verify_key']));
-        $pre_define_key = explode(',', $verify_key);
-        $new_data = [];
-
-        foreach ($pre_define_key as $value) {
-            $sanitized_key = sanitize_key($value);
-            if (isset($post_data[$sanitized_key])) {
-                $new_data[$sanitized_key] = sanitize_text_field(wp_unslash($post_data[$sanitized_key]));
-            }
-        }
-
-        $new_data['store_passwd'] = md5($this->client['store_password']);
-        ksort($new_data);
-
-        $hash_string = "";
-        foreach ($new_data as $key => $value) {
-            $hash_string .= $key . '=' . $value . '&';
-        }
-        $hash_string = rtrim($hash_string, '&');
-
-        $verify_sign = sanitize_text_field(wp_unslash($post_data['verify_sign']));
-        return md5($hash_string) === $verify_sign;
+       
     }
 
     private function validateTransaction(array $post_data): bool {
@@ -134,10 +106,9 @@ class ProdamusOrderProcess {
         $currency = sanitize_text_field($post_data['currency'] ?? 'BDT');
 
         $val_id = urlencode(sanitize_text_field($post_data['val_id'] ?? ''));
-        $store_id = urlencode(sanitize_text_field($this->client['store_id']));
-        $store_passwd = urlencode(sanitize_text_field($this->client['store_password']));
+        $api_token = urlencode(sanitize_text_field($this->client['api_token']));
 
-        $validationUrl = $this->client['api_domain'] . self::API_VALIDATION_ENDPOINT . '?val_id=' . $val_id . '&store_id=' . $store_id . '&store_passwd=' . $store_passwd . '&v=1&format=json';
+        $validationUrl = $this->client['api_domain'] . self::API_VALIDATION_ENDPOINT . '?val_id=' . $val_id . '&api_token=' . $api_token . '&store_passwd=' . $store_passwd . '&v=1&format=json';
 
         $isLocalhost = $this->client['environment'] === 'sandbox';
         $ssl_verify = !$isLocalhost;

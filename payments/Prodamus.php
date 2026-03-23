@@ -32,7 +32,7 @@ class Prodamus extends BasePayment {
 	protected $client;
 
 	public function check(): bool {
-		$configKeys = Arr::make(['store_id', 'store_password', 'mode']);
+		$configKeys = Arr::make(['api_token', 'mode']);
 
 		$isConfigOk = $configKeys->every(function ($key) {
 			return $this->config->has($key) && !empty($this->config->get($key));
@@ -44,8 +44,7 @@ class Prodamus extends BasePayment {
 	public function setup(): void {
 		try {
 			$this->client = [
-				'store_id' => $this->config->get('store_id'),
-				'store_password' => $this->config->get('store_password'),
+				'api_token' => $this->config->get('api_token'),
 				'api_domain' => $this->config->get('api_domain'),
 			];
 		} catch (Throwable $error) {
@@ -132,8 +131,7 @@ class Prodamus extends BasePayment {
 		try {
 			$paymentData = $this->getData();
 
-			$paymentData['store_id'] = $this->client['store_id'];
-			$paymentData['store_passwd'] = $this->client['store_password'];
+			$paymentData['api_token'] = $this->client['api_token'];
 
 			$apiUrl = $this->client['api_domain'] . self::API_PROCESS_ENDPOINT;
 			$response = $this->callProdamusApi($apiUrl, $paymentData);
@@ -269,10 +267,9 @@ class Prodamus extends BasePayment {
 		$currency = $post_data['currency'] ?? 'BDT';
 
 		$val_id = urlencode($post_data['val_id'] ?? '');
-		$store_id = urlencode($this->client['store_id']);
-		$store_passwd = urlencode($this->client['store_password']);
+		$api_token = urlencode($this->client['api_token']);
 
-		$validationUrl = $this->client['api_domain'] . self::API_VALIDATION_ENDPOINT . '?val_id=' . $val_id . '&store_id=' . $store_id . '&store_passwd=' . $store_passwd . '&v=1&format=json';
+		$validationUrl = $this->client['api_domain'] . self::API_VALIDATION_ENDPOINT . '?val_id=' . $val_id . '&api_token=' . $api_token . '&store_passwd=' . $store_passwd . '&v=1&format=json';
 
 		$isLocalhost = $this->config->get('mode') === 'sandbox';
 		$ssl_verify = !$isLocalhost;
@@ -320,7 +317,6 @@ class Prodamus extends BasePayment {
 			}
 		}
 
-		$new_data['store_passwd'] = md5($this->client['store_password']);
 		ksort($new_data);
 
 		$hash_string = "";
