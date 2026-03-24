@@ -71,7 +71,35 @@ final class Init {
     }
 
     public function process_prodamus_form_submission(): void {
-        $prodamus = new ProdamusOrderProcess();
+       // Получаем настройки Prodamus
+        $options = get_option('tutor_option');
+        $payment_settings = json_decode($options['payment_settings'], true);
+        
+        $api_token = '';
+        $environment = 'sandbox';
+        
+        if (isset($payment_settings['payment_methods'])) {
+            foreach ($payment_settings['payment_methods'] as $method) {
+                if ($method['name'] === 'prodamus') {
+                    foreach ($method['fields'] as $field) {
+                        if ($field['name'] === 'api_token') {
+                            $api_token = $field['value'];
+                        }
+                        if ($field['name'] === 'environment') {
+                            $environment = $field['value'];
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        
+        if (empty($api_token)) {
+            return;
+        }
+        
+        // Создаем процессор с параметрами
+        $prodamus = new ProdamusOrderProcess($api_token, $environment);
         $prodamus->process_prodamus_form_submission();
     }
 

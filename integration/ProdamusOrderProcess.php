@@ -2,22 +2,42 @@
 
 namespace TPPay;
 
+use Throwable;
+use Exception;
+
 class ProdamusOrderProcess {
-
-	private const API_PROCESS_ENDPOINT = '/gwprocess/v4/api.php';
-	private const API_VALIDATION_ENDPOINT = '/validator/api/validationserverAPI.php';
-
-	private const STATUS_MAP = [
-		'VALID'     => 'paid',
-		'VALIDATED' => 'paid',
-		'FAILED'    => 'failed',
-		'CANCELLED' => 'cancelled',
-		'PENDING'   => 'pending',
-	];
-
-	protected $client;
-
-	public function process_prodamus_form_submission(): void {
+    
+    private const STATUS_MAP = [
+        'paid'      => 'paid',
+        'success'   => 'paid',
+        'VALID'     => 'paid',
+        'VALIDATED' => 'paid',
+        'FAILED'    => 'failed',
+        'CANCELLED' => 'cancelled',
+        'PENDING'   => 'pending',
+    ];
+    
+    private $api_token;
+    private $environment;
+    private $api_domain;
+    
+    /**
+     * Конструктор
+     */
+    public function __construct(string $api_token, string $environment = 'sandbox')
+    {
+        $this->api_token = $api_token;
+        $this->environment = $environment;
+        $this->api_domain = $environment === 'sandbox' 
+            ? 'https://sandbox.prodamus.com' 
+            : 'https://securepay.prodamus.com';
+    }
+    
+    /**
+     * Обработка формы (для совместимости со старым методом)
+     */
+    public function process_prodamus_form_submission(): void {
+        // Проверяем, что это возврат с оплаты
         $order_placement = isset($_GET['tutor_order_placement']) ? sanitize_text_field(wp_unslash($_GET['tutor_order_placement'])) : '';
         if ($order_placement !== 'success') {
             return;
@@ -38,110 +58,187 @@ class ProdamusOrderProcess {
             return;
         }
 
-        $options = get_option('tutor_option');
-        $payment_settings = json_decode($options['payment_settings'], true);
+        $sanitized_post = [];
+        foreach ($_POST as $key => $value) {
+            $sanitized_post[$key] = is_array($value) ? array_map('sanitize_text_field', array_map('wp_unslash', $value)) : sanitize_text_field(wp_unslash($value));
+        }
 
-        $prodamus_settings = null;
-        foreach ($payment_settings['payment_methods'] as $method) {
-            if ($method['name'] === 'prodamus') {
-                $prodamus_settings = $method;
-                break;
+        // Проверяем подпись если есть
+        $headers = getallheaders();
+        $signature = $headers['Sign'] ?? '';
+        
+        $is_valid = true;
+        if (!empty($signature)) {
+            $is_valid = $this->verifySignature($sanitized_post, $signature);
+        }
+        
+        if ($is_valid) {
+            $status = isset($sanitized_post['status']) ? $sanitized_post['status'] : 'paid';
+            $payment_status = self::STATUS_MAP[$status] ?? 'paid';
+            
+            self::update_order_in_database($order_id, $payment_status, $sanitized_post['tran_id'] ?? '');
+            
+            // Зачисляем на курс если оплата успешна
+            if ($payment_status === 'paid') {
+                $this->enroll_student_to_course($order_id);
             }
         }
-
-        if (!$prodamus_settings) {
-            return;
-        }
+    }
+    
+    /**
+     * Обработка вебхука от Prodamus
+     */
+    public function processWebhook(array $webhookData, string $signature): array
+    {
         try {
-            foreach ($prodamus_settings['fields'] as $field) {
-                if (!isset($field['name']) || !isset($field['value'])) {
-                    continue;
-                }
-
-                switch ($field['name']) {
-                    case 'api_token':
-                        $this->client['api_token'] = $field['value'];
-                        break;
-                    case 'environment':
-                        $this->client['environment'] = $field['value'];
-                        break;
-                }
+            if (empty($webhookData)) {
+                return $this->errorResponse('Empty webhook data');
             }
-
-            if (empty($this->client['api_token']) || empty($this->client['environment'])) {
-                return;
+            
+            if (!$this->verifySignature($webhookData, $signature)) {
+                return $this->errorResponse('Invalid signature');
             }
-
-            $this->client['api_domain'] = $this->client['environment'] === 'sandbox'
-                ? 'https://sandbox.prodamus.com'
-                : 'https://securepay.prodamus.com';
-
-            $sanitized_post = [];
-            foreach ($_POST as $key => $value) {
-                $sanitized_post[$key] = is_array($value) ? array_map('sanitize_text_field', array_map('wp_unslash', $value)) : sanitize_text_field(wp_unslash($value));
+            
+            $status = $webhookData['status'] ?? '';
+            if ($status !== 'paid' && $status !== 'success' && $status !== 'VALID' && $status !== 'VALIDATED') {
+                return $this->errorResponse('Payment not successful', ['status' => $status]);
             }
-
-            if ($this->validateTransaction($sanitized_post)) {
-                $status = isset($sanitized_post['status']) ? $sanitized_post['status'] : 'FAILED';
-                $payment_status = self::STATUS_MAP[$status] ?? 'failed';
-
-                self::update_order_in_database($order_id, $payment_status, $sanitized_post['tran_id'] ?? '');
+            
+            $orderId = $this->extractOrderId($webhookData);
+            if (!$orderId) {
+                return $this->errorResponse('Order ID not found in webhook data');
             }
-        } catch (\Exception $e) {
+            
+            if ($this->isOrderProcessed($orderId)) {
+                return $this->successResponse('Order already processed');
+            }
+            
+            self::update_order_in_database($orderId, 'paid', $webhookData['transaction_id'] ?? '');
+            
+            $enrollmentResult = $this->enroll_student_to_course($orderId);
+            
+            $this->markAsProcessed($orderId);
+            $this->saveTransaction($orderId, $webhookData);
+            
+            return $this->successResponse('Payment processed successfully', [
+                'order_id' => $orderId,
+                'enrolled' => $enrollmentResult
+            ]);
+            
+        } catch (Throwable $error) {
+            error_log('ProdamusOrderProcess Error: ' . $error->getMessage());
+            return $this->errorResponse($error->getMessage());
         }
-
     }
-
-    private function verifyHash(array $post_data): bool {
-       
-    }
-
-    private function validateTransaction(array $post_data): bool {
-        if (!$this->verifyHash($post_data)) {
-            return false;
+    
+    /**
+     * Проверка подписи
+     */
+    private function verifySignature(array $data, string $signature): bool
+    {
+        if (!class_exists('\Hmac')) {
+            require_once dirname(__DIR__) . '/payments/Prodamus/Hmac.php';
         }
-
-        $tran_id = sanitize_text_field($post_data['tran_id'] ?? '');
-        $amount = isset($post_data['amount']) ? floatval($post_data['amount']) : 0.0;
-        $currency = sanitize_text_field($post_data['currency'] ?? 'BDT');
-
-        $val_id = urlencode(sanitize_text_field($post_data['val_id'] ?? ''));
-        $api_token = urlencode(sanitize_text_field($this->client['api_token']));
-
-        $validationUrl = $this->client['api_domain'] . self::API_VALIDATION_ENDPOINT . '?val_id=' . $val_id . '&api_token=' . $api_token . '&store_passwd=' . $store_passwd . '&v=1&format=json';
-
-        $isLocalhost = $this->client['environment'] === 'sandbox';
-        $ssl_verify = !$isLocalhost;
-
-        $args = [
-            'timeout' => 30,
-            'sslverify' => $ssl_verify,
+        
+        return \Hmac::verify($data, $this->api_token, $signature);
+    }
+    
+    /**
+     * Извлечение ID заказа
+     */
+    private function extractOrderId(array $webhookData): ?int
+    {
+        $orderId = $webhookData['order_id'] ?? 
+                   $webhookData['value_a'] ?? 
+                   $webhookData['merchant_order_id'] ?? 
+                   null;
+        
+        return $orderId ? (int) $orderId : null;
+    }
+    
+    /**
+     * Проверка, обработан ли заказ
+     */
+    private function isOrderProcessed(int $orderId): bool
+    {
+        $processed = get_post_meta($orderId, '_prodamus_processed', true);
+        return $processed === 'yes';
+    }
+    
+    /**
+     * Отметка заказа как обработанного
+     */
+    private function markAsProcessed(int $orderId): void
+    {
+        update_post_meta($orderId, '_prodamus_processed', 'yes');
+    }
+    
+    /**
+     * Сохранение транзакции
+     */
+    private function saveTransaction(int $orderId, array $webhookData): void
+    {
+        $transactionData = [
+            'transaction_id' => $webhookData['transaction_id'] ?? '',
+            'amount' => $webhookData['amount'] ?? 0,
+            'currency' => $webhookData['currency'] ?? 'USD',
+            'payment_method' => $webhookData['payment_method'] ?? '',
+            'payment_date' => current_time('mysql'),
+            'raw_data' => $webhookData
         ];
-
-        $response = wp_remote_get($validationUrl, $args);
-
-        if (is_wp_error($response)) {
+        
+        update_post_meta($orderId, '_prodamus_transaction', $transactionData);
+    }
+    
+    /**
+     * Зачисление студента на курс
+     */
+    private function enroll_student_to_course(int $order_id): bool
+    {
+        global $wpdb;
+        
+        // Получаем данные заказа
+        $order = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}tutor_orders WHERE id = %d",
+            $order_id
+        ));
+        
+        if (!$order) {
             return false;
         }
-
-        $code = wp_remote_retrieve_response_code($response);
-        $body = wp_remote_retrieve_body($response);
-
-        if ($code == 200 && !empty($body)) {
-            $result = json_decode($body);
-
-            if (json_last_error() === JSON_ERROR_NONE && isset($result->status) && ($result->status === 'VALID' || $result->status === 'VALIDATED')) {
-                if ($currency === 'BDT') {
-                    return trim($tran_id) === trim($result->tran_id) && abs($amount - $result->amount) < 1;
-                } else {
-                    return trim($tran_id) === trim($result->tran_id) && abs($amount - $result->currency_amount) < 1;
-                }
-            }
+        
+        if (!function_exists('tutor_utils')) {
+            return false;
         }
-
-        return false;
+        
+        try {
+            $courseId = $order->course_id;
+            $studentId = $order->user_id;
+            
+            $isEnrolled = tutor_utils()->is_enrolled($courseId, $studentId);
+            
+            if ($isEnrolled) {
+                return true;
+            }
+            
+            $enrollment = tutor_utils()->do_enroll($courseId, $studentId);
+            
+            if ($enrollment) {
+                error_log("Student {$studentId} enrolled to course {$courseId} after Prodamus payment");
+                return true;
+            }
+            
+            return false;
+            
+        } catch (Throwable $error) {
+            error_log('Enrollment error: ' . $error->getMessage());
+            return false;
+        }
     }
-
+    
+    /**
+     * Обновление заказа в базе данных
+     */
     private static function update_order_in_database(int $order_id, string $payment_status, string $transaction_id): void {
         global $wpdb;
 
@@ -165,5 +262,28 @@ class ProdamusOrderProcess {
             ['%d']
         );
     }
-
+    
+    /**
+     * Успешный ответ
+     */
+    private function successResponse(string $message, array $data = []): array
+    {
+        return [
+            'success' => true,
+            'message' => $message,
+            'data' => $data
+        ];
+    }
+    
+    /**
+     * Ответ с ошибкой
+     */
+    private function errorResponse(string $message, array $context = []): array
+    {
+        return [
+            'success' => false,
+            'message' => $message,
+            'context' => $context
+        ];
+    }
 }

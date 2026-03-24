@@ -8,6 +8,7 @@ use Ollyo\PaymentHub\Core\Support\Arr;
 use Ollyo\PaymentHub\Core\Support\System;
 use GuzzleHttp\Exception\RequestException;
 use Ollyo\PaymentHub\Core\Payment\BasePayment;
+use TPPay\ProdamusOrderProcess; // Добавляем импорт
 
 require_once __DIR__ . '/../Hmac.php';
 
@@ -101,10 +102,10 @@ class Prodamus extends BasePayment
 				]
 			]
 		];
-	// 	echo '<pre>';
-	// echo var_dump($prodamusData);
-	// 	echo '</pre>';
-	// 	die();
+		// 	echo '<pre>';
+		// echo var_dump($prodamusData);
+		// 	echo '</pre>';
+		// 	die();
 		// Добавляем информацию о клиенте с учетом Азербайджана
 		if (!empty($data->customer->name)) {
 			$prodamusData['customer_name'] = $data->customer->name;
@@ -182,47 +183,36 @@ class Prodamus extends BasePayment
 	public function handleWebhook(): void
 	{
 		try {
-			// Получаем POST данные от Prodamus
 			$postData = $_POST;
-
-			// Получаем подпись из заголовков
 			$headers = getallheaders();
 			$signature = $headers['Sign'] ?? '';
 
-			// Проверяем подпись
 			if (empty($postData) || empty($signature)) {
 				http_response_code(400);
 				echo 'error: Invalid request';
 				exit;
 			}
 
-			// Проверяем подпись запроса
 			if (!\Hmac::verify($postData, $this->client['api_token'], $signature)) {
 				http_response_code(400);
 				echo 'error: Invalid signature';
 				exit;
 			}
 
-			// Обрабатываем данные оплаты
-			$orderId = $postData['order_id'] ?? '';
-			$paymentStatus = $postData['status'] ?? '';
-			$transactionId = $postData['transaction_id'] ?? '';
-			$amount = $postData['amount'] ?? 0;
+			// Используем ProdamusOrderProcess для обработки
+			$processor = new ProdamusOrderProcess(
+				$this->client['api_token'],
+				$this->client['mode'] ?? 'sandbox'
+			);
 
-			// Проверяем статус оплаты
-			if ($paymentStatus === 'paid') {
-				// Оплата успешна - обновляем статус заказа
-				// Здесь ваша логика обновления заказа
-				error_log("Prodamus: Payment successful for order {$orderId}, transaction {$transactionId}");
+			$result = $processor->processWebhook($postData, $signature);
 
-				// Отправляем успешный ответ Prodamus
+			if ($result['success']) {
 				http_response_code(200);
 				echo 'success';
 			} else {
-				// Оплата не удалась
-				error_log("Prodamus: Payment failed for order {$orderId}, status: {$paymentStatus}");
-				http_response_code(200);
-				echo 'success';
+				http_response_code(400);
+				echo 'error: ' . $result['message'];
 			}
 
 			exit;
