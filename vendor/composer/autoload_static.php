@@ -9,20 +9,20 @@ class ComposerStaticInit92e72a8205e242b8ef8337dc4ea65f98
     public static $prefixLengthsPsr4 = array (
         'T' => 
         array (
-            'TPPay\\' => 6,
+            'TEPay\\' => 6,
         ),
         'P' => 
         array (
-            'Payments\\Prodamus\\' => 18,
+            'Payments\\Epoint\\' => 16,
         ),
     );
 
     public static $prefixDirsPsr4 = array (
-        'TPPay\\' => 
+        'TEPay\\' => 
         array (
             0 => __DIR__ . '/../..' . '/integration',
         ),
-        'Payments\\Prodamus\\' => 
+        'Payments\\Epoint\\' => 
         array (
             0 => __DIR__ . '/../..' . '/payments',
         ),

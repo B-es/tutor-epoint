@@ -1,25 +1,23 @@
 {
-    "version": "1.0.3",
-    "name": "hasinhayder/tutor-sslcommerz",
-    "description": "TS Pay - SSLCommerz payment gateway integration for Tutor LMS",
-    "type": "wordpress-plugin",
-    "license": "GPL-2.0-or-later",
-    "authors": [
-        {
-            "name": "Hasin Hayder",
-            "email": "hasin@hasin.me",
-            "homepage": "https://github.com/hasinhayder",
-            "role": "Developer"
-        }
-    ],
-    "homepage": "https://github.com/hasinhayder/tutor-sslcommerz",
-    "autoload": {
-        "psr-4": {
-            "Payments\\Prodamus\\": "payments/",
-            "TPPay\\": "integration/"
-        }
+  "version": "1.0.3",
+  "name": "b-es/tutor-epoint",
+  "description": "TE Pay - Epoint payment gateway integration for Tutor LMS",
+  "type": "wordpress-plugin",
+  "license": "GPL-2.0-or-later",
+  "authors": [
+    {
+      "name": "B_es",
+      "role": "Developer"
     }
-    ,"config": {
-        "disable-tls": true
+  ],
+  "homepage": "https://github.com/b-es/tutor-epoint",
+  "autoload": {
+    "psr-4": {
+      "Payments\\Epoint\\": "payments/",
+      "TEPay\\": "integration/"
     }
+  },
+  "config": {
+    "disable-tls": true
+  }
 }
