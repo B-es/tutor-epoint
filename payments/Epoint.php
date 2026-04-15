@@ -6,9 +6,8 @@ use Throwable;
 use ErrorException;
 use Ollyo\PaymentHub\Core\Support\Arr;
 use Ollyo\PaymentHub\Core\Support\System;
-use GuzzleHttp\Exception\RequestException;
 use Ollyo\PaymentHub\Core\Payment\BasePayment;
-use TEPay\EpointOrderProcess; // Добавляем импорт
+use TEPay\EpointOrderProcess;
 
 class Epoint extends BasePayment
 {
@@ -93,17 +92,24 @@ class Epoint extends BasePayment
         $epointData = [
             "public_key" => $this->client["public_key"],
             "amount" => number_format($total_price, 2, ".", ""),
-            "currency" => self::DEFAULT_CURRENCY, // AZN по умолчанию
+            "currency" => self::DEFAULT_CURRENCY,
             "language" => self::DEFAULT_LANGUAGE,
             "order_id" => (string) $data->order_id,
             "description" =>
                 $data->order_description ?? __("Course Purchase", "tepay"),
-            "customer_email" => $data->customer->email,
-            "customer_phone" => $data->customer->phone_number ?? "",
-            "success_url" => $this->config->get("success_url"),
-            "error_url" => $this->config->get("cancel_url"),
-            "result_url" => $this->config->get("webhook_url"),
         ];
+
+        // Добавляем URLs перенаправления если есть
+        if ($this->config->get("success_url")) {
+            $epointData["success_redirect_url"] = $this->config->get(
+                "success_url",
+            );
+        }
+        if ($this->config->get("cancel_url")) {
+            $epointData["error_redirect_url"] = $this->config->get(
+                "cancel_url",
+            );
+        }
 
         // Удаляем пустые поля
         $epointData = array_filter($epointData, function ($value) {
@@ -135,21 +141,22 @@ class Epoint extends BasePayment
 
             if (
                 $response &&
-                isset($response["url"]) &&
-                !empty($response["url"])
+                isset($response["redirect_url"]) &&
+                !empty($response["redirect_url"])
             ) {
                 // Выполняем редирект на платежную форму
-                wp_redirect($response["url"]);
+                wp_redirect($response["redirect_url"]);
                 exit();
             } else {
                 $errorMessage =
-                    $response["error"] ?? __("Unknown error occurred", "tepay");
+                    $response["message"] ??
+                    __("Unknown error occurred", "tepay");
                 throw new ErrorException(
                     __("Epoint Payment Failed: ", "tepay") . $errorMessage,
                 );
             }
-        } catch (RequestException $error) {
-            throw new ErrorException($error->getMessage());
+        } catch (ErrorException $error) {
+            throw $error;
         }
     }
 
@@ -174,15 +181,12 @@ class Epoint extends BasePayment
         ]);
 
         if (is_wp_error($response)) {
-            throw new ErrorException(
-                "API request failed: " . $response->get_error_message(),
-            );
+            $errorMsg = "API request failed: " . $response->get_error_message();
+            throw new ErrorException($errorMsg);
         }
 
         $body = wp_remote_retrieve_body($response);
         $result = json_decode($body, true);
-
-        error_log("Epoint API Response: " . print_r($result, true));
 
         return $result ?: [];
     }
@@ -200,7 +204,7 @@ class Epoint extends BasePayment
                 exit();
             }
 
-            // Проверяем подпись: base64_encode(sha1(private_key + data + private_key, 1))
+            // Проверяем подпись
             $privateKey = $this->client["private_key"];
             $expectedSignature = base64_encode(
                 sha1($privateKey . $data . $privateKey, true),

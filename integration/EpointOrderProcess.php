@@ -116,12 +116,7 @@ class EpointOrderProcess
             }
 
             $status = $webhookData["status"] ?? "";
-            if (
-                $status !== "paid" &&
-                $status !== "success" &&
-                $status !== "VALID" &&
-                $status !== "VALIDATED"
-            ) {
+            if ($status !== "success") {
                 return $this->errorResponse("Payment not successful", [
                     "status" => $status,
                 ]);
