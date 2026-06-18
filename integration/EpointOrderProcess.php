@@ -257,6 +257,7 @@ class EpointOrderProcess
                 error_log(
                     "Student {$studentId} enrolled to course {$courseId} after Epoint payment",
                 );
+                $this->send_enrollment_email($studentId, $order_id);
                 return true;
             }
 
@@ -265,6 +266,81 @@ class EpointOrderProcess
             error_log("Enrollment error: " . $error->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Отправка письма о регистрации на курс
+     */
+    private function send_enrollment_email(int $user_id, int $order_id): void
+    {
+        global $wpdb;
+
+        // Если не удалось найти пользователя или курс, выходим
+        if ($order_id < 1 || $user_id < 1) {
+            return;
+        }
+
+        $post_id_object = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT item_id FROM {$wpdb->prefix}tutor_order_items WHERE order_id = %d",
+                $order_id,
+            ),
+        );
+
+        if (!$post_id_object) {
+            return;
+        }
+
+        $post_id = $post_id_object->item_id;
+
+        $post_object = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT post_title FROM {$wpdb->prefix}posts WHERE post_type = 'courses' and id = %d",
+                $post_id,
+            ),
+        );
+
+        if (!$post_object) {
+            return;
+        }
+
+        $course_title = $post_object->post_title;
+
+        $to_object = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT billing_email FROM {$wpdb->prefix}tutor_customers WHERE user_id = %d",
+                $user_id,
+            ),
+        );
+
+        if (!$to_object) {
+            return;
+        }
+
+        $to = $to_object->billing_email;
+        $first_name = $to_object->billing_first_name;
+        $last_name = $to_object->billing_last_name;
+
+        $subject = sprintf(
+            __("Успешная регистрация на курс: %s", "tepay"),
+            $course_title,
+        );
+
+        $message = sprintf(
+            __(
+                "Здравствуйте, %s!\n\nВы успешно зарегистрировались на курс \"%s\".\nНомер заказа: #%d\n\nСпасибо за оплату через Epoint!",
+                "tepay",
+            ),
+            $first_name ?: $last_name,
+            $course_title,
+            $order_id,
+        );
+
+        // Заголовки письма
+        $headers = ["Content-Type: text/plain; charset=UTF-8"];
+
+        // Отправка письма (можно также добавить admin_email в копию, если нужно)
+        wp_mail($to, $subject, $message, $headers);
     }
 
     /**
