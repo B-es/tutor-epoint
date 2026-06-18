@@ -11,7 +11,7 @@ use TEPay\EpointOrderProcess;
 
 class Epoint extends BasePayment
 {
-    private const API_CHECKOUT_ENDPOINT = "/api/1/checkout";
+    private const API_CHECKOUT_ENDPOINT = "/api/1/request";
     private const API_STATUS_ENDPOINT = "/api/1/get-status";
     private const DEFAULT_CURRENCY = "AZN";
     private const DEFAULT_LANGUAGE = "ru";
@@ -88,6 +88,12 @@ class Epoint extends BasePayment
             );
         }
 
+        $item_name = $data->items->{0}['item_name'] ?? '';
+        $description = $data->order_description ?? '';
+
+        $name_and_description = $item_name . ($item_name && $description ? ' - ' : '') . $description;
+        
+        
         // Формируем данные для Epoint API согласно документации
         $epointData = [
             "public_key" => $this->client["public_key"],
@@ -96,7 +102,7 @@ class Epoint extends BasePayment
             "language" => self::DEFAULT_LANGUAGE,
             "order_id" => (string) $data->order_id,
             "description" =>
-                $data->order_description ?? __("Course Purchase", "tepay"),
+                $name_and_description ?? __("Course Purchase", "tepay"),
         ];
 
         // Добавляем URLs перенаправления если есть
@@ -160,36 +166,58 @@ class Epoint extends BasePayment
         }
     }
 
-    private function callEpointApi(
-        string $url,
-        string $data,
-        string $signature,
-    ): array {
-        // Формируем POST данные
-        $postData = [
-            "data" => $data,
-            "signature" => $signature,
-        ];
-
-        // Отправляем POST запрос
-        $response = wp_remote_post($url, [
-            "body" => $postData,
-            "timeout" => 30,
-            "headers" => [
+   private function callEpointApi(string $url, string $data, string $signature): array
+{
+    $postData = ["data" => $data, "signature" => $signature];
+    
+    // echo '<pre style="background: #f0f0f0; padding: 15px; border: 1px solid #ccc; margin: 20px; overflow: auto;">';
+    // echo "=== EPOINT API DEBUG ===\n\n";
+    
+    // echo "API URL: " . $url . "\n\n";
+    // echo "POST Data:\n";
+    // print_r($postData);
+    // echo "\n";
+    
+    $response = wp_remote_post($url, [
+        "body" => $postData,
+        "timeout" => 30,
+        "headers" => [
                 "Content-Type" => "application/x-www-form-urlencoded",
             ],
-        ]);
-
-        if (is_wp_error($response)) {
-            $errorMsg = "API request failed: " . $response->get_error_message();
-            throw new ErrorException($errorMsg);
-        }
-
-        $body = wp_remote_retrieve_body($response);
-        $result = json_decode($body, true);
-
-        return $result ?: [];
+    ]);
+    
+    if (is_wp_error($response)) {
+        // echo "WP_ERROR: " . $response->get_error_message() . "\n";
+        // echo "</pre>";
+        throw new ErrorException($response->get_error_message());
     }
+    
+    // $status_code = wp_remote_retrieve_response_code($response);
+    // echo "HTTP Status Code: " . $status_code . "\n\n";
+    
+    $body = wp_remote_retrieve_body($response);
+    // echo "Response Body:\n";
+    // var_dump($body);
+    // echo "\n";
+    
+    // //Первые 500 символов если нужно
+    // echo "Response Body (first 500 chars):\n";
+    // echo substr($body, 0, 500) . "\n\n";
+    
+    $result = json_decode($body, true);
+    
+    // if (json_last_error() !== JSON_ERROR_NONE) {
+    //     echo "JSON Decode Error: " . json_last_error_msg() . "\n";
+    //     echo "Response is NOT valid JSON\n";
+    // } else {
+    //     echo "Decoded JSON Result:\n";
+    //     print_r($result);
+    // }
+    
+    // echo "</pre>";
+    // die();
+    return is_array($result) ? $result : [];
+}
 
     public function handleWebhook(): void
     {

@@ -8,3 +8,4 @@ build.php
 svn-push.sh
 
 *.pdf
+test.py
