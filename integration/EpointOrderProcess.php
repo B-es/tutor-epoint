@@ -31,74 +31,170 @@ class EpointOrderProcess
         $this->api_domain = "https://epoint.az";
     }
 
-    /**
-     * Обработка формы (для совместимости со старым методом)
-     */
     public function process_epoint_form_submission(): void
     {
-        // Проверяем, что это возврат с оплаты
+        error_log(
+            "=== EpointOrderProcess::process_epoint_form_submission (обработка возврата) НАЧАЛО",
+        );
+        error_log("GET params: " . print_r($_GET, true));
+        error_log("POST params: " . print_r($_POST, true));
+
+        // Проверяем параметр в GET, указывающий на успешный возврат
         $order_placement = isset($_GET["tutor_order_placement"])
             ? sanitize_text_field(wp_unslash($_GET["tutor_order_placement"]))
             : "";
+        error_log(
+            "process_epoint_form_submission: GET tutor_order_placement = " .
+                $order_placement,
+        );
+
         if ($order_placement !== "success") {
+            error_log(
+                "process_epoint_form_submission: параметр не равен success, выход",
+            );
             return;
         }
 
-        if (empty($_POST) || !isset($_POST["tran_id"])) {
-            return;
+        // --- Извлекаем order_id ---
+        $order_id = 0;
+        if (isset($_GET["order_id"])) {
+            $raw_order_id = sanitize_text_field(wp_unslash($_GET["order_id"]));
+            // Если есть '?', обрезаем всё после него (костыль для тестового значения)
+            if (strpos($raw_order_id, "?") !== false) {
+                $raw_order_id = substr(
+                    $raw_order_id,
+                    0,
+                    strpos($raw_order_id, "?"),
+                );
+            }
+            $order_id = absint($raw_order_id);
+        } elseif (isset($_POST["order_id"])) {
+            $order_id = absint(
+                sanitize_text_field(wp_unslash($_POST["order_id"])),
+            );
+        } elseif (isset($_POST["value_a"])) {
+            // если используется поле value_a (старый формат)
+            $order_id = absint(
+                sanitize_text_field(wp_unslash($_POST["value_a"])),
+            );
         }
 
-        $tran_id = isset($_POST["tran_id"])
-            ? sanitize_text_field(wp_unslash($_POST["tran_id"]))
-            : "";
-        if (empty($tran_id)) {
-            return;
-        }
-
-        $value_a = isset($_POST["value_a"])
-            ? sanitize_text_field(wp_unslash($_POST["value_a"]))
-            : "";
-        $order_id = absint($value_a);
         if (!$order_id) {
+            error_log(
+                "process_epoint_form_submission: order_id не найден или равен 0, выход",
+            );
             return;
         }
+        error_log("process_epoint_form_submission: order_id = " . $order_id);
 
-        $sanitized_post = [];
-        foreach ($_POST as $key => $value) {
-            $sanitized_post[$key] = is_array($value)
-                ? array_map(
-                    "sanitize_text_field",
-                    array_map("wp_unslash", $value),
-                )
-                : sanitize_text_field(wp_unslash($value));
+        // --- Извлекаем transaction_id ---
+        $transaction_id = "";
+        if (isset($_GET["transaction_id"])) {
+            $transaction_id = sanitize_text_field(
+                wp_unslash($_GET["transaction_id"]),
+            );
+        } elseif (isset($_GET["tran_id"])) {
+            $transaction_id = sanitize_text_field(wp_unslash($_GET["tran_id"]));
+        } elseif (isset($_POST["transaction_id"])) {
+            $transaction_id = sanitize_text_field(
+                wp_unslash($_POST["transaction_id"]),
+            );
+        } elseif (isset($_POST["tran_id"])) {
+            $transaction_id = sanitize_text_field(
+                wp_unslash($_POST["tran_id"]),
+            );
         }
 
-        // Проверяем подпись если есть
-        $headers = getallheaders();
-        $signature = $headers["Sign"] ?? "";
+        if (empty($transaction_id)) {
+            error_log(
+                "process_epoint_form_submission: transaction_id не найден, продолжаем без него",
+            );
+        } else {
+            error_log(
+                "process_epoint_form_submission: transaction_id = " .
+                    $transaction_id,
+            );
+        }
 
+        // --- Извлекаем статус ---
+        $status = "";
+        if (isset($_GET["payment_status"])) {
+            $status = sanitize_text_field(wp_unslash($_GET["payment_status"]));
+        } elseif (isset($_POST["status"])) {
+            $status = sanitize_text_field(wp_unslash($_POST["status"]));
+        }
+        if (empty($status)) {
+            $status = "success"; // по умолчанию считаем успешным
+        }
+        error_log("process_epoint_form_submission: status = " . $status);
+
+        $payment_status = self::STATUS_MAP[$status] ?? "paid";
+        error_log(
+            "process_epoint_form_submission: payment_status = " .
+                $payment_status,
+        );
+
+        // --- Проверка подписи (если есть) ---
+        $headers = getallheaders();
+        $signature =
+            $headers["Sign"] ??
+            (isset($_POST["signature"]) ? $_POST["signature"] : "");
         $is_valid = true;
         if (!empty($signature)) {
-            $is_valid = $this->verifySignature($sanitized_post, $signature);
-        }
-
-        if ($is_valid) {
-            $status = isset($sanitized_post["status"])
-                ? $sanitized_post["status"]
-                : "paid";
-            $payment_status = self::STATUS_MAP[$status] ?? "paid";
-
-            self::update_order_in_database(
-                $order_id,
-                $payment_status,
-                $sanitized_post["tran_id"] ?? "",
-            );
-
-            // Зачисляем на курс если оплата успешна
-            if ($payment_status === "paid") {
-                $this->enroll_student_to_course($order_id);
+            // Собираем данные для проверки подписи
+            $data_for_verify = [
+                "order_id" => $order_id,
+                "transaction_id" => $transaction_id,
+                "status" => $status,
+            ];
+            // Если есть POST data (закодированный JSON) – используем его
+            if (!empty($_POST["data"])) {
+                $decoded = json_decode(base64_decode($_POST["data"]), true);
+                if (is_array($decoded)) {
+                    $data_for_verify = $decoded;
+                }
             }
+            $is_valid = $this->verifySignature($data_for_verify, $signature);
+            error_log(
+                "process_epoint_form_submission: проверка подписи = " .
+                    ($is_valid ? "ВЕРНА" : "НЕВЕРНА"),
+            );
+        } else {
+            error_log(
+                "process_epoint_form_submission: подпись отсутствует, считаем валидным (только для теста)",
+            );
         }
+
+        if (!$is_valid) {
+            error_log("process_epoint_form_submission: подпись НЕВЕРНА, выход");
+            return;
+        }
+
+        // --- Обновление заказа ---
+        self::update_order_in_database(
+            $order_id,
+            $payment_status,
+            $transaction_id,
+        );
+        error_log("process_epoint_form_submission: заказ обновлён");
+
+        // --- Зачисление студента, если оплата успешна ---
+        if ($payment_status === "paid") {
+            error_log(
+                'process_epoint_form_submission: статус "paid", вызываем enroll_student_to_course',
+            );
+            $enroll_result = $this->enroll_student_to_course($order_id);
+            error_log(
+                "process_epoint_form_submission: enroll_student_to_course вернул " .
+                    ($enroll_result ? "ИСТИНА" : "ЛОЖЬ"),
+            );
+        } else {
+            error_log(
+                'process_epoint_form_submission: статус НЕ "paid", зачисление не вызывается',
+            );
+        }
+
+        error_log("=== process_epoint_form_submission ЗАВЕРШЁН");
     }
 
     /**
@@ -121,7 +217,7 @@ class EpointOrderProcess
                     "status" => $status,
                 ]);
             }
-
+            error_log("Что за хуйня");
             $orderId = $this->extractOrderId($webhookData);
             if (!$orderId) {
                 return $this->errorResponse(
@@ -223,9 +319,21 @@ class EpointOrderProcess
      */
     private function enroll_student_to_course(int $order_id): bool
     {
+        error_log("=== enroll_student_to_course START, order_id=" . $order_id);
         global $wpdb;
 
-        // Получаем данные заказа
+        // 1. Проверяем, не отправлено ли уже письмо для этого заказа
+        $email_sent = get_post_meta($order_id, "_enrollment_email_sent", true);
+        if ($email_sent === "yes") {
+            error_log(
+                "enroll_student_to_course: письмо уже отправлено для заказа " .
+                    $order_id .
+                    ", пропускаем",
+            );
+            return true;
+        }
+
+        // 2. Получаем заказ
         $order = $wpdb->get_row(
             $wpdb->prepare(
                 "SELECT * FROM {$wpdb->prefix}tutor_orders WHERE id = %d",
@@ -234,98 +342,206 @@ class EpointOrderProcess
         );
 
         if (!$order) {
+            error_log(
+                "enroll_student_to_course: ЗАКАЗ НЕ НАЙДЕН для id " . $order_id,
+            );
+            return false;
+        }
+        error_log(
+            'enroll_student_to_course: $order = ' . print_r($order, true),
+        );
+
+        // 3. Извлекаем user_id
+        $studentId = 0;
+        if (property_exists($order, "user_id")) {
+            $studentId = (int) $order->user_id;
+        } elseif (property_exists($order, "customer_id")) {
+            $customer = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT user_id FROM {$wpdb->prefix}tutor_customers WHERE id = %d",
+                    $order->customer_id,
+                ),
+            );
+            if ($customer && property_exists($customer, "user_id")) {
+                $studentId = (int) $customer->user_id;
+            }
+        }
+
+        if (!$studentId) {
+            error_log(
+                "enroll_student_to_course: НЕ УДАЛОСЬ ОПРЕДЕЛИТЬ studentId",
+            );
+            return false;
+        }
+        error_log("enroll_student_to_course: student_id = $studentId");
+
+        // 4. Получаем course_id (item_id) из tutor_order_items
+        $item = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT item_id FROM {$wpdb->prefix}tutor_order_items WHERE order_id = %d LIMIT 1",
+                $order_id,
+            ),
+        );
+        if (!$item || !property_exists($item, "item_id")) {
+            error_log(
+                "enroll_student_to_course: НЕ НАЙДЕН item_id для order_id $order_id в tutor_order_items",
+            );
+            return false;
+        }
+        $courseId = (int) $item->item_id;
+        error_log(
+            "enroll_student_to_course: course_id из tutor_order_items = $courseId",
+        );
+
+        if (!$courseId) {
+            error_log(
+                "enroll_student_to_course: course_id = $courseId, не может быть 0",
+            );
             return false;
         }
 
+        // 5. Проверяем наличие tutor_utils
         if (!function_exists("tutor_utils")) {
+            error_log(
+                "enroll_student_to_course: ФУНКЦИЯ tutor_utils НЕ СУЩЕСТВУЕТ",
+            );
             return false;
         }
 
         try {
-            $courseId = $order->course_id;
-            $studentId = $order->user_id;
-
+            // 6. Проверяем, зачислен ли уже студент
             $isEnrolled = tutor_utils()->is_enrolled($courseId, $studentId);
+            error_log(
+                "enroll_student_to_course: isEnrolled = " .
+                    ($isEnrolled ? "ДА" : "НЕТ"),
+            );
 
-            if ($isEnrolled) {
-                return true;
-            }
-
-            $enrollment = tutor_utils()->do_enroll($courseId, $studentId);
-
-            if ($enrollment) {
+            if (!$isEnrolled) {
+                // Зачисляем, если ещё не зачислен
+                $enrollment = tutor_utils()->do_enroll($courseId, $studentId);
                 error_log(
-                    "Student {$studentId} enrolled to course {$courseId} after Epoint payment",
+                    "enroll_student_to_course: результат do_enroll = " .
+                        ($enrollment ? "УСПЕШНО" : "НЕУДАЧА"),
                 );
-                $this->send_enrollment_email($studentId, $order_id);
-                return true;
+
+                if (!$enrollment) {
+                    error_log(
+                        "enroll_student_to_course: do_enroll вернул ложь, зачисление НЕ ПРОИЗОШЛО",
+                    );
+                    return false;
+                }
             }
 
-            return false;
+            // 7. Отправляем письмо (если ещё не отправлено) и ставим метку
+            error_log(
+                "enroll_student_to_course: отправляем письмо (если не отправлено)",
+            );
+            $this->send_enrollment_email($studentId, $order_id);
+            update_post_meta($order_id, "_enrollment_email_sent", "yes");
+            error_log(
+                "enroll_student_to_course: письмо отправлено, мета-поле установлено",
+            );
+
+            return true;
         } catch (Throwable $error) {
-            error_log("Enrollment error: " . $error->getMessage());
+            error_log(
+                "enroll_student_to_course ИСКЛЮЧЕНИЕ: " . $error->getMessage(),
+            );
             return false;
         }
     }
-
     /**
      * Отправка письма о регистрации на курс
      */
     private function send_enrollment_email(int $user_id, int $order_id): void
     {
+        // ЛОГ: начало метода с параметрами
+        error_log(
+            "=== send_enrollment_email START, user_id=" .
+                $user_id .
+                ", order_id=" .
+                $order_id,
+        );
+
         global $wpdb;
 
-        // Если не удалось найти пользователя или курс, выходим
+        // Проверка валидности ID
         if ($order_id < 1 || $user_id < 1) {
+            error_log(
+                "send_enrollment_email: НЕКОРРЕКТНЫЕ ID (order_id или user_id меньше 1), выход",
+            );
             return;
         }
 
+        // Получаем ID курса из таблицы tutor_order_items
         $post_id_object = $wpdb->get_row(
             $wpdb->prepare(
                 "SELECT item_id FROM {$wpdb->prefix}tutor_order_items WHERE order_id = %d",
                 $order_id,
             ),
         );
-
         if (!$post_id_object) {
+            error_log(
+                "send_enrollment_email: НЕТ ЗАПИСИ В tutor_order_items для order_id " .
+                    $order_id .
+                    ", выход",
+            );
             return;
         }
-
         $post_id = $post_id_object->item_id;
+        error_log("send_enrollment_email: ID курса (post_id) = " . $post_id);
 
+        // Получаем название курса из таблицы posts
         $post_object = $wpdb->get_row(
             $wpdb->prepare(
                 "SELECT post_title FROM {$wpdb->prefix}posts WHERE post_type = 'courses' and id = %d",
                 $post_id,
             ),
         );
-
         if (!$post_object) {
+            error_log(
+                "send_enrollment_email: НЕ НАЙДЕН КУРС С ID " .
+                    $post_id .
+                    " в таблице posts, выход",
+            );
             return;
         }
-
         $course_title = $post_object->post_title;
+        error_log("send_enrollment_email: название курса = " . $course_title);
 
+        // Получаем email и имя пользователя из таблицы tutor_customers
         $to_object = $wpdb->get_row(
             $wpdb->prepare(
-                "SELECT billing_email FROM {$wpdb->prefix}tutor_customers WHERE user_id = %d",
+                "SELECT billing_email, billing_first_name, billing_last_name FROM {$wpdb->prefix}tutor_customers WHERE user_id = %d",
                 $user_id,
             ),
         );
-
         if (!$to_object) {
+            error_log(
+                "send_enrollment_email: НЕТ ЗАПИСИ В tutor_customers ДЛЯ user_id " .
+                    $user_id .
+                    ", выход",
+            );
             return;
         }
-
         $to = $to_object->billing_email;
+        if (empty($to)) {
+            error_log(
+                "send_enrollment_email: ПОЛЕ billing_email ПУСТОЕ для user_id " .
+                    $user_id .
+                    ", выход",
+            );
+            return;
+        }
+        error_log("send_enrollment_email: email получателя = " . $to);
         $first_name = $to_object->billing_first_name;
         $last_name = $to_object->billing_last_name;
 
+        // Формируем тему и текст письма
         $subject = sprintf(
             __("Успешная регистрация на курс: %s", "tepay"),
             $course_title,
         );
-
         $message = sprintf(
             __(
                 "Здравствуйте, %s!\n\nВы успешно зарегистрировались на курс \"%s\".\nНомер заказа: #%d\n\nСпасибо за оплату через Epoint!",
@@ -335,12 +551,24 @@ class EpointOrderProcess
             $course_title,
             $order_id,
         );
-
-        // Заголовки письма
         $headers = ["Content-Type: text/plain; charset=UTF-8"];
 
-        // Отправка письма (можно также добавить admin_email в копию, если нужно)
-        wp_mail($to, $subject, $message, $headers);
+        // ЛОГ: перед вызовом wp_mail
+        error_log(
+            "send_enrollment_email: вызываем wp_mail с to=" .
+                $to .
+                ", subject=" .
+                $subject,
+        );
+
+        // Отправляем письмо
+        $mail_result = wp_mail($to, $subject, $message, $headers);
+
+        // ЛОГ: результат отправки
+        error_log(
+            "send_enrollment_email: wp_mail вернул " .
+                ($mail_result ? "ИСТИНА (успешно)" : "ЛОЖЬ (ошибка)"),
+        );
     }
 
     /**

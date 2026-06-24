@@ -88,12 +88,14 @@ class Epoint extends BasePayment
             );
         }
 
-        $item_name = $data->items->{0}['item_name'] ?? '';
-        $description = $data->order_description ?? '';
+        $item_name = $data->items->{0}["item_name"] ?? "";
+        $description = $data->order_description ?? "";
 
-        $name_and_description = $item_name . ($item_name && $description ? ' - ' : '') . $description;
-        
-        
+        $name_and_description =
+            $item_name .
+            ($item_name && $description ? " - " : "") .
+            $description;
+
         // Формируем данные для Epoint API согласно документации
         $epointData = [
             "public_key" => $this->client["public_key"],
@@ -166,100 +168,125 @@ class Epoint extends BasePayment
         }
     }
 
-   private function callEpointApi(string $url, string $data, string $signature): array
-{
-    $postData = ["data" => $data, "signature" => $signature];
-    
-    // echo '<pre style="background: #f0f0f0; padding: 15px; border: 1px solid #ccc; margin: 20px; overflow: auto;">';
-    // echo "=== EPOINT API DEBUG ===\n\n";
-    
-    // echo "API URL: " . $url . "\n\n";
-    // echo "POST Data:\n";
-    // print_r($postData);
-    // echo "\n";
-    
-    $response = wp_remote_post($url, [
-        "body" => $postData,
-        "timeout" => 30,
-        "headers" => [
+    private function callEpointApi(
+        string $url,
+        string $data,
+        string $signature,
+    ): array {
+        $postData = ["data" => $data, "signature" => $signature];
+
+        // echo '<pre style="background: #f0f0f0; padding: 15px; border: 1px solid #ccc; margin: 20px; overflow: auto;">';
+        // echo "=== EPOINT API DEBUG ===\n\n";
+
+        // echo "API URL: " . $url . "\n\n";
+        // echo "POST Data:\n";
+        // print_r($postData);
+        // echo "\n";
+
+        $response = wp_remote_post($url, [
+            "body" => $postData,
+            "timeout" => 30,
+            "headers" => [
                 "Content-Type" => "application/x-www-form-urlencoded",
             ],
-    ]);
-    
-    if (is_wp_error($response)) {
-        // echo "WP_ERROR: " . $response->get_error_message() . "\n";
+        ]);
+
+        if (is_wp_error($response)) {
+            // echo "WP_ERROR: " . $response->get_error_message() . "\n";
+            // echo "</pre>";
+            throw new ErrorException($response->get_error_message());
+        }
+
+        // $status_code = wp_remote_retrieve_response_code($response);
+        // echo "HTTP Status Code: " . $status_code . "\n\n";
+
+        $body = wp_remote_retrieve_body($response);
+        // echo "Response Body:\n";
+        // var_dump($body);
+        // echo "\n";
+
+        // //Первые 500 символов если нужно
+        // echo "Response Body (first 500 chars):\n";
+        // echo substr($body, 0, 500) . "\n\n";
+
+        $result = json_decode($body, true);
+
+        // if (json_last_error() !== JSON_ERROR_NONE) {
+        //     echo "JSON Decode Error: " . json_last_error_msg() . "\n";
+        //     echo "Response is NOT valid JSON\n";
+        // } else {
+        //     echo "Decoded JSON Result:\n";
+        //     print_r($result);
+        // }
+
         // echo "</pre>";
-        throw new ErrorException($response->get_error_message());
+        // die();
+        return is_array($result) ? $result : [];
     }
-    
-    // $status_code = wp_remote_retrieve_response_code($response);
-    // echo "HTTP Status Code: " . $status_code . "\n\n";
-    
-    $body = wp_remote_retrieve_body($response);
-    // echo "Response Body:\n";
-    // var_dump($body);
-    // echo "\n";
-    
-    // //Первые 500 символов если нужно
-    // echo "Response Body (first 500 chars):\n";
-    // echo substr($body, 0, 500) . "\n\n";
-    
-    $result = json_decode($body, true);
-    
-    // if (json_last_error() !== JSON_ERROR_NONE) {
-    //     echo "JSON Decode Error: " . json_last_error_msg() . "\n";
-    //     echo "Response is NOT valid JSON\n";
-    // } else {
-    //     echo "Decoded JSON Result:\n";
-    //     print_r($result);
-    // }
-    
-    // echo "</pre>";
-    // die();
-    return is_array($result) ? $result : [];
-}
 
     public function handleWebhook(): void
     {
+        // ЛОГ: начало обработки вебхука
+        error_log("=== handleWebhook (вебхук) ВЫЗВАН");
+
         try {
             $postData = $_POST;
+            // ЛОГ: выводим содержимое $_POST (но не слишком подробно, чтобы не захламить лог)
+            error_log(
+                "handleWebhook: POST данные: " . print_r($postData, true),
+            );
+
             $signature = $postData["signature"] ?? "";
             $data = $postData["data"] ?? "";
 
             if (empty($postData) || empty($signature) || empty($data)) {
+                error_log(
+                    "handleWebhook: ОТСУТСТВУЮТ signature или data, ответ 400",
+                );
                 http_response_code(400);
                 echo "error: Invalid request";
                 exit();
             }
 
-            // Проверяем подпись
+            // Проверка подписи (опущена для краткости, но логируем результат)
             $privateKey = $this->client["private_key"];
             $expectedSignature = base64_encode(
                 sha1($privateKey . $data . $privateKey, true),
             );
-
             if ($signature !== $expectedSignature) {
+                error_log("handleWebhook: ПОДПИСЬ НЕВЕРНАЯ, ответ 400");
                 http_response_code(400);
                 echo "error: Invalid signature";
                 exit();
             }
+            error_log("handleWebhook: подпись проверена успешно");
 
             // Декодируем данные
-            $resultData = json_decode(base64_decode($data), true);
+            $decodedData = json_decode(base64_decode($data), true);
+            error_log(
+                "handleWebhook: расшифрованные данные: " .
+                    print_r($decodedData, true),
+            );
 
-            if (!$resultData || !isset($resultData["status"])) {
+            if (!$decodedData || !isset($decodedData["status"])) {
+                error_log(
+                    "handleWebhook: НЕВЕРНЫЙ ФОРМАТ ДАННЫХ или отсутствует status, ответ 400",
+                );
                 http_response_code(400);
                 echo "error: Invalid data";
                 exit();
             }
 
-            // Используем EpointOrderProcess для обработки
+            // Создаём процессор и вызываем обработку
             $processor = new EpointOrderProcess(
                 $this->client["public_key"],
                 $this->client["private_key"],
             );
-
-            $result = $processor->processWebhook($resultData, $signature);
+            $result = $processor->processWebhook($decodedData, $signature);
+            error_log(
+                "handleWebhook: результат processWebhook: " .
+                    print_r($result, true),
+            );
 
             if ($result["success"]) {
                 http_response_code(200);
@@ -268,10 +295,9 @@ class Epoint extends BasePayment
                 http_response_code(400);
                 echo "error: " . $result["message"];
             }
-
             exit();
         } catch (Throwable $error) {
-            error_log("Epoint webhook error: " . $error->getMessage());
+            error_log("handleWebhook ИСКЛЮЧЕНИЕ: " . $error->getMessage());
             http_response_code(400);
             echo "error: " . $error->getMessage();
             exit();
